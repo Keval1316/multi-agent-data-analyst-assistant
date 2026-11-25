@@ -28,7 +28,7 @@ import {
   Wifi,
   WifiOff
 } from 'lucide-react';
-import PipelineTracker from './components/PipelineTracker';
+import PipelineTracker, { PIPELINE_STEPS } from './components/PipelineTracker';
 import OverviewTab from './components/OverviewTab';
 import DataQualityTab from './components/DataQualityTab';
 import StatisticsTab from './components/StatisticsTab';
@@ -95,10 +95,14 @@ export default function App() {
           if (data.history && Array.isArray(data.history) && data.history.length > 0) {
             setHistory((prev) => {
               const map = new Map();
-              data.history.forEach((item) => map.set(item.dataset_id, item));
-              prev.forEach((item) => {
-                const existing = map.get(item.dataset_id) || {};
-                map.set(item.dataset_id, { ...existing, ...item });
+              prev.forEach((item) => map.set(item.dataset_id, item));
+              data.history.forEach((backendItem) => {
+                const localItem = map.get(backendItem.dataset_id) || {};
+                map.set(backendItem.dataset_id, {
+                  ...localItem,
+                  ...backendItem,
+                  report: localItem.report || backendItem.report
+                });
               });
               return Array.from(map.values());
             });
@@ -195,6 +199,41 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
     }
   };
 
+  const buildHistoryItemFromReport = (fullReport, fallbackFilename) => ({
+    dataset_id: fullReport.dataset_id,
+    filename: fullReport.filename || fallbackFilename || 'dataset.csv',
+    title: fullReport.title,
+    subtitle: fullReport.subtitle,
+    generated_at: fullReport.generated_at || new Date().toISOString(),
+    quality_score: fullReport.quality?.quality_score ?? 100,
+    grade: fullReport.quality?.grade || 'A',
+    total_rows: fullReport.profile?.total_rows ?? 0,
+    total_columns: fullReport.profile?.total_columns ?? 0,
+    domain: fullReport.understanding?.domain || 'General Data',
+    charts_count: fullReport.charts?.charts?.length ?? 0,
+    insights_count: fullReport.insights?.insights?.length ?? 0,
+    cleaning_summary: fullReport.cleaning_summary || null,
+    report: fullReport
+  });
+
+  const navigateToDashboard = (fullReport, fallbackFilename) => {
+    setCurrentStep(null);
+    setCompletedSteps(PIPELINE_STEPS.map((s) => s.id));
+    setFinalReport(fullReport);
+    setStage('dashboard');
+    setActiveTab('overview');
+
+    if (fullReport && fullReport.dataset_id) {
+      const historyItem = buildHistoryItemFromReport(fullReport, fallbackFilename);
+      setHistory((prev) => {
+        const filtered = prev.filter((h) => h.dataset_id !== fullReport.dataset_id);
+        return [historyItem, ...filtered];
+      });
+    }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const handleStartAnalysis = async () => {
     if (!selectedFile) return;
 
@@ -206,12 +245,105 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
     setLivePreviews({});
     setIsStopping(false);
 
-    // Setup AbortController for termination support
-    abortControllerRef.current = new AbortController();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     const apiBase = getApiBaseUrl();
     const formData = new FormData();
     formData.append('file', selectedFile);
+
+    let streamDatasetId = null;
+    let streamCompleted = false;
+    let streamErrored = false;
+
+    const fetchFallbackReport = async (datasetId) => {
+      if (!datasetId || abortController.signal.aborted) return null;
+      try {
+        const res = await fetch(`${apiBase}/api/dataset/${datasetId}/report`, {
+          signal: abortController.signal
+        });
+        if (res.ok) {
+          return await res.json();
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.warn('Fallback report fetch failed:', err);
+        }
+      }
+      return null;
+    };
+
+    const processSseBlock = async (block) => {
+      if (!block.trim()) return;
+
+      let eventType = 'message';
+      const dataLines = [];
+
+      const eventLines = block.split('\n');
+      for (const line of eventLines) {
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+
+      const rawData = dataLines.join('\n');
+      if (!rawData) return;
+
+      let eventPayload;
+      try {
+        eventPayload = JSON.parse(rawData);
+      } catch (parseErr) {
+        console.warn('Failed to parse SSE line JSON:', parseErr, rawData);
+        return;
+      }
+
+      if (eventPayload.dataset_id && !streamDatasetId) {
+        streamDatasetId = eventPayload.dataset_id;
+      }
+
+      if (eventType === 'pipeline_start') {
+        setCurrentStep('validate_file');
+      } else if (eventType === 'step_start') {
+        setCurrentStep(eventPayload.step);
+      } else if (eventType === 'step_complete') {
+        const completedStepId = eventPayload.step;
+        setCompletedSteps((prev) => Array.from(new Set([...prev, completedStepId])));
+
+        const stepIdx = PIPELINE_STEPS.findIndex((s) => s.id === completedStepId);
+        if (stepIdx !== -1) {
+          const nextStep = PIPELINE_STEPS[stepIdx + 1];
+          setCurrentStep(nextStep ? nextStep.id : null);
+        }
+
+        if (eventPayload.preview) {
+          setLivePreviews((prev) => ({
+            ...prev,
+            [completedStepId]: eventPayload.preview
+          }));
+        }
+      } else if (eventType === 'complete' || eventType === 'pipeline_complete') {
+        streamCompleted = true;
+        let fullReport = eventPayload.report;
+        if (!fullReport) {
+          fullReport = await fetchFallbackReport(eventPayload.dataset_id || streamDatasetId);
+        }
+        if (fullReport) {
+          navigateToDashboard(fullReport, eventPayload.filename || selectedFile.name);
+        } else {
+          streamErrored = true;
+          setErrorMsg('Pipeline completed, but the analysis report could not be loaded. Please check History.');
+          setCurrentStep(null);
+          setStage('upload');
+        }
+      } else if (eventType === 'error' || eventType === 'pipeline_error') {
+        streamErrored = true;
+        setErrorMsg(eventPayload.error || 'A critical error occurred during pipeline analysis.');
+        setCurrentStep(null);
+        setStage('upload');
+      }
+    };
 
     try {
       const response = await fetch(`${apiBase}/api/analyze/stream`, {
@@ -231,72 +363,37 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop(); // keep last incomplete chunk in buffer
+        buffer = buffer.replace(/\r\n/g, '\n');
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? ''; // keep last incomplete chunk in buffer
 
-        for (const block of lines) {
-          if (!block.trim()) continue;
+        for (const block of blocks) {
+          await processSseBlock(block);
+        }
+      }
 
-          let eventType = 'message';
-          let rawData = '';
+      // Process any trailing buffered event that didn't end with \n\n
+      if (buffer.trim()) {
+        for (const block of buffer.replace(/\r\n/g, '\n').split('\n\n')) {
+          await processSseBlock(block);
+        }
+      }
 
-          const eventLines = block.split('\n');
-          for (const line of eventLines) {
-            if (line.startsWith('event:')) {
-              eventType = line.replace('event:', '').trim();
-            } else if (line.startsWith('data:')) {
-              rawData = line.replace('data:', '').trim();
-            }
-          }
-
-          if (!rawData) continue;
-
-          try {
-            const eventPayload = JSON.parse(rawData);
-
-            // Handle event types
-            if (eventType === 'step_start') {
-              setCurrentStep(eventPayload.step);
-            } else if (eventType === 'step_complete') {
-              setCompletedSteps((prev) => Array.from(new Set([...prev, eventPayload.step])));
-              if (eventPayload.preview) {
-                setLivePreviews((prev) => ({
-                  ...prev,
-                  [eventPayload.step]: eventPayload.preview
-                }));
-              }
-            } else if (eventType === 'pipeline_complete') {
-              const fullReport = eventPayload.report;
-              setFinalReport(fullReport);
-              setStage('dashboard');
-              setActiveTab('overview');
-
-              // Save dataset to analysis history
-              if (fullReport && fullReport.dataset_id) {
-                const historyItem = {
-                  dataset_id: fullReport.dataset_id,
-                  filename: fullReport.dataset_info?.filename || selectedFile.name,
-                  file_size: fullReport.dataset_info?.file_size || selectedFile.size,
-                  row_count: fullReport.profile?.total_rows || 0,
-                  column_count: fullReport.profile?.total_columns || 0,
-                  created_at: new Date().toISOString(),
-                  report: fullReport
-                };
-                setHistory((prev) => {
-                  const filtered = prev.filter((h) => h.dataset_id !== fullReport.dataset_id);
-                  return [historyItem, ...filtered];
-                });
-              }
-            } else if (eventType === 'pipeline_error') {
-              setErrorMsg(eventPayload.error || 'A critical error occurred during pipeline analysis.');
-              setStage('upload');
-            }
-          } catch (parseErr) {
-            console.warn('Failed to parse SSE line JSON:', parseErr, rawData);
-          }
+      // Fallback if stream ended cleanly without emitting/receiving the final complete event
+      if (!streamCompleted && !streamErrored && !abortController.signal.aborted) {
+        const fallbackReport = await fetchFallbackReport(streamDatasetId);
+        if (fallbackReport) {
+          navigateToDashboard(fallbackReport, selectedFile.name);
+        } else if (!abortController.signal.aborted) {
+          setErrorMsg('Analysis stream ended unexpectedly before completion. Please try again.');
+          setCurrentStep(null);
+          setStage('upload');
         }
       }
     } catch (err) {

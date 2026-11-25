@@ -17,7 +17,7 @@ import {
   Square
 } from 'lucide-react';
 
-const PIPELINE_STEPS = [
+export const PIPELINE_STEPS = [
   { id: 'validate_file', index: 1, label: 'Validating File Structure & Encoding', agent: 'FileValidator', icon: FileCheck },
   { id: 'load_dataset', index: 2, label: 'Ingesting Raw Data & DuckDB Registration', agent: 'DatasetLoader', icon: Database },
   { id: 'profile_and_audit', index: 3, label: 'Profiling Schema & Quality Auditing', agent: 'QualityChecker', icon: ShieldAlert },
