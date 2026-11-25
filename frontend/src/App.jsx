@@ -501,7 +501,7 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
     }
     if (streamReaderRef.current) {
       try {
-        streamReaderRef.current.cancel();
+        Promise.resolve(streamReaderRef.current.cancel()).catch(() => {});
       } catch (err) {
         console.warn('Error cancelling stream reader:', err);
       }
@@ -525,13 +525,14 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
     setStatusNotice(null);
     setActiveTab('overview');
     setIsSidebarOpen(false);
+    setIsSettingsOpen(false);
 
     // 4. Smooth scroll back to top of the upload view
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen bg-[#FFFBE9] text-[#3E2723] flex flex-col font-sans relative overflow-x-hidden">
+    <div className="min-h-screen bg-[#FFFBE9] text-[#3E2723] flex flex-col font-sans relative overflow-x-clip">
       {/* Delicate #CEAB93 Snowfall Background Animation */}
       <SnowfallBackground />
 
@@ -588,6 +589,7 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
           <div className="flex items-center space-x-2 sm:space-x-3">
             {/* Server Settings Button */}
             <button
+              type="button"
               onClick={() => {
                 setCustomApiUrlInput(getApiBaseUrl());
                 setTestStatus(null);
@@ -602,6 +604,7 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
             </button>
 
             <button
+              type="button"
               onClick={() => setIsSidebarOpen(true)}
               className="p-2 sm:px-3.5 sm:py-2 rounded-2xl bg-white/90 border border-[#CEAB93]/60 text-[#3E2723] hover:border-[#AD8B73] hover:bg-[#FFFBE9] transition-all shadow-xs flex items-center space-x-2 cursor-pointer group"
               title="Open Analysis History"
@@ -617,6 +620,7 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
 
             {/* New Analysis Button - Always visible and redirects to main data upload */}
             <button
+              type="button"
               onClick={handleReset}
               className={`flex items-center space-x-2 px-3 sm:px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all shadow-xs cursor-pointer group ${
                 stage !== 'upload'
@@ -639,15 +643,13 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
 
       {/* 2. Main Content Body */}
       <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-14">
-        <AnimatePresence mode="wait">
           {/* STAGE 1: HERO & UPLOAD */}
           {stage === 'upload' && (
             <motion.div
               key="upload-stage"
-              initial={{ opacity: 0, y: 15 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
-              transition={{ duration: 0.3 }}
+              transition={{ duration: 0.25 }}
               className="space-y-10 max-w-3xl mx-auto"
             >
               {/* Notice Banner if analysis was stopped / cancelled */}
@@ -807,9 +809,9 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
           {stage === 'streaming' && (
             <motion.div
               key="streaming-stage"
-              initial={{ opacity: 0, y: 15 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
+              transition={{ duration: 0.25 }}
               className="space-y-6"
             >
               <PipelineTracker
@@ -842,9 +844,9 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
           {stage === 'dashboard' && finalReport && (
             <motion.div
               key="dashboard-stage"
-              initial={{ opacity: 0, y: 15 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -15 }}
+              transition={{ duration: 0.25 }}
               className="space-y-8"
             >
               {/* Executive Header Banner */}
@@ -925,7 +927,6 @@ ORD-2010,Hank Green,electronics,Mouse,2,25.00,0,50.00,2025-01-10,False,West`;
               </ErrorBoundary>
             </motion.div>
           )}
-        </AnimatePresence>
       </main>
 
       {/* Server Settings Modal */}
